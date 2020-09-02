@@ -17,6 +17,9 @@ np.random.seed(0)
 def is_clipped(audio, clipping_threshold=0.99):
     return any(abs(audio) > clipping_threshold)
 
+def is_silence(audio, activity_threshold=0.1):
+    return all(abs(audio) < activity_threshold)
+
 def normalize(audio, target_level=-25):
     '''Normalize the signal to the target level'''
     rms = (audio ** 2).mean() ** 0.5
@@ -85,7 +88,7 @@ def add_reverb(sasxExe, input_wav, filter_file, output_wav):
     ''' Function to add reverb'''
     command_sasx_apply_reverb = "{0} -r {1} \
         -f {2} -o {3}".format(sasxExe, input_wav, filter_file, output_wav)
-                                                               
+
     subprocess.call(command_sasx_apply_reverb)
     return output_wav
 
@@ -131,9 +134,11 @@ def snr_mixer(params, clean, noise, snr, target_level=-25, clipping_threshold=0.
 
     # Mix noise and clean speech
     noisyspeech = clean + noisenewlevel
-    
+
+    # JRS: from here, whatever you do to clean you have to do to noisyspeech and vice versa.
+
     # Randomly select RMS value between -15 dBFS and -35 dBFS and normalize noisyspeech with that value
-    # There is a chance of clipping that might happen with very less probability, which is not a major issue. 
+    # There is a chance of clipping that might happen with very less probability, which is not a major issue.
     noisy_rms_level = np.random.randint(params['target_level_lower'], params['target_level_upper'])
     rmsnoisy = (noisyspeech**2).mean()**0.5
     scalarnoisy = 10 ** (noisy_rms_level / 20) / (rmsnoisy+EPS)
@@ -171,7 +176,7 @@ def segmental_snr_mixer(params, clean, noise, snr, target_level=-25, clipping_th
     # Mix noise and clean speech
     noisyspeech = clean + noisenewlevel
     # Randomly select RMS value between -15 dBFS and -35 dBFS and normalize noisyspeech with that value
-    # There is a chance of clipping that might happen with very less probability, which is not a major issue. 
+    # There is a chance of clipping that might happen with very less probability, which is not a major issue.
     noisy_rms_level = np.random.randint(params['target_level_lower'], params['target_level_upper'])
     rmsnoisy = (noisyspeech**2).mean()**0.5
     scalarnoisy = 10 ** (noisy_rms_level / 20) / (rmsnoisy+EPS)
@@ -187,7 +192,7 @@ def segmental_snr_mixer(params, clean, noise, snr, target_level=-25, clipping_th
         noisy_rms_level = int(20*np.log10(scalarnoisy/noisyspeech_maxamplevel*(rmsnoisy+EPS)))
 
     return clean, noisenewlevel, noisyspeech, noisy_rms_level
-    
+
 
 def active_rms(clean, noise, fs=16000, energy_thresh=-50):
     '''Returns the clean and noise RMS of the noise calculated only in the active portions'''
@@ -212,7 +217,7 @@ def active_rms(clean, noise, fs=16000, energy_thresh=-50):
         noise_rms = (noise_active_segs**2).mean()**0.5
     else:
         noise_rms = EPS
-        
+
     if len(clean_active_segs)!=0:
         clean_rms = (clean_active_segs**2).mean()**0.5
     else:
@@ -276,14 +281,14 @@ def audio_segmenter(input_dir, dest_dir, segment_len=10, ext='*.wav'):
     files = glob.glob(f"{input_dir}/"+ext)
     for i in range(len(files)):
         audio, fs = audioread(files[i])
-        
+
         if len(audio) > (segment_len*fs) and len(audio)%(segment_len*fs) != 0:
-            audio = np.append(audio, audio[0 : segment_len*fs - (len(audio)%(segment_len*fs))]) 
+            audio = np.append(audio, audio[0 : segment_len*fs - (len(audio)%(segment_len*fs))])
         if len(audio) < (segment_len*fs):
             while len(audio) < (segment_len*fs):
                 audio = np.append(audio, audio)
             audio = audio[:segment_len*fs]
-        
+
         num_segments = int(len(audio)/(segment_len*fs))
         audio_segments = np.split(audio, num_segments)
 
@@ -294,4 +299,3 @@ def audio_segmenter(input_dir, dest_dir, segment_len=10, ext='*.wav'):
             newname = basename+'_'+str(j)+ext
             destpath = os.path.join(dest_dir,newname)
             audiowrite(destpath, audio_segments[j], fs)
-

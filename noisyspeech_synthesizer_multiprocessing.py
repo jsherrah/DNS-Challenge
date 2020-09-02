@@ -18,7 +18,7 @@ import random
 from random import shuffle
 import librosa
 import numpy as np
-from audiolib import is_clipped, audioread, audiowrite, snr_mixer, activitydetector
+from audiolib import is_silence, is_clipped, audioread, audiowrite, snr_mixer, activitydetector
 import utils
 
 
@@ -56,8 +56,8 @@ def build_audio(is_clean, params, filenum, audio_samples_length=-1):
     if is_clean:
         source_files = params['cleanfilenames']
         idx_counter = clean_counter
-    else:    
-        source_files = params['noisefilenames']        
+    else:
+        source_files = params['noisefilenames']
         idx_counter = noise_counter
 
     # initialize silence
@@ -85,6 +85,12 @@ def build_audio(is_clean, params, filenum, audio_samples_length=-1):
         # check for clipping, and if found move onto next file
         if is_clipped(input_audio):
             clipped_files.append(source_files[idx])
+            tries_left -= 1
+            continue
+
+        # Don't use samples that are all silence pretty much.
+        if is_silence(input_audio):
+            print('Detected silent segment, skipping (max = {})'.format(np.max(np.abs(input_audio))))
             tries_left -= 1
             continue
 
@@ -170,18 +176,19 @@ def main_gen(params, filenum):
         # use a randomly sampled SNR value between the specified bounds
         else:
             snr = np.random.randint(params['snr_lower'], params['snr_upper'])
-            
-        clean_snr, noise_snr, noisy_snr, target_level = snr_mixer(params=params, 
-                                                                  clean=clean, 
-                                                                  noise=noise, 
+
+        clean_snr, noise_snr, noisy_snr, target_level = snr_mixer(params=params,
+                                                                  clean=clean,
+                                                                  noise=noise,
                                                                   snr=snr)
         # Uncomment the below lines if you need segmental SNR and comment the above lines using snr_mixer
-        #clean_snr, noise_snr, noisy_snr, target_level = segmental_snr_mixer(params=params, 
-        #                                                                    clean=clean, 
-        #                                                                    noise=noise, 
+        #clean_snr, noise_snr, noisy_snr, target_level = segmental_snr_mixer(params=params,
+        #                                                                    clean=clean,
+        #                                                                    noise=noise,
         #                                                                    snr=snr)
         # unexpected clipping
-        if is_clipped(clean_snr) or is_clipped(noise_snr) or is_clipped(noisy_snr):       
+        if is_clipped(clean_snr) or is_clipped(noise_snr) or is_clipped(noisy_snr):
+            print('Warning: unexpected clipping with file {}'.format(clean_source_files))
             continue
         else:
             break
@@ -202,9 +209,14 @@ def main_gen(params, filenum):
     cleanpath = os.path.join(params['clean_proc_dir'], cleanfilename)
     noisepath = os.path.join(params['noise_proc_dir'], noisefilename)
 
+    # JRS
+    # Symlink clean fiename to noisy filename in noisy dir.  This is how the neural net code
+    # expects noisy/clean correspondence.
+    os.symlink(noisyfilename, os.path.join(params['noisyspeech_dir'], cleanfilename))
+
     audio_signals = [noisy_snr, clean_snr, noise_snr]
     file_paths = [noisypath, cleanpath, noisepath]
-    
+
     for i in range(len(audio_signals)):
         try:
             audiowrite(file_paths[i], audio_signals[i], params['fs'])
@@ -262,10 +274,10 @@ def main_body():
     params['audio_length'] = float(cfg['audio_length'])
     params['silence_length'] = float(cfg['silence_length'])
     params['total_hours'] = float(cfg['total_hours'])
-    
+
     if cfg['fileindex_start'] != 'None' and cfg['fileindex_start'] != 'None':
         params['fileindex_start'] = int(cfg['fileindex_start'])
-        params['fileindex_end'] = int(cfg['fileindex_end'])    
+        params['fileindex_end'] = int(cfg['fileindex_end'])
         params['num_files'] = int(params['fileindex_end'])-int(params['fileindex_start'])
     else:
         params['num_files'] = int((params['total_hours']*60*60)/params['audio_length'])
@@ -279,7 +291,7 @@ def main_body():
     params['randomize_snr'] = utils.str2bool(cfg['randomize_snr'])
     params['target_level_lower'] = int(cfg['target_level_lower'])
     params['target_level_upper'] = int(cfg['target_level_upper'])
-    
+
     if 'snr' in cfg.keys():
         params['snr'] = int(cfg['snr'])
     else:
@@ -304,10 +316,10 @@ def main_body():
     # Invoke multiple processes and fan out calls to main_gen() to these processes
     global clean_counter, noise_counter
     clean_counter = multiprocessing.Value('i', 0)
-    noise_counter = multiprocessing.Value('i', 0)    
-    
+    noise_counter = multiprocessing.Value('i', 0)
+
     multi_pool = multiprocessing.Pool(processes=PROCESSES, initializer = init, initargs = (clean_counter, noise_counter, ))
-    fileindices = range(params['num_files'])    
+    fileindices = range(params['num_files'])
     output_lists = multi_pool.starmap(main_gen, zip(repeat(params), fileindices))
 
     flat_output_lists = []
@@ -321,7 +333,7 @@ def main_body():
     utils.write_log_file(log_dir, 'source_files.csv', flat_output_lists[0] + flat_output_lists[3])
     utils.write_log_file(log_dir, 'clipped_files.csv', flat_output_lists[1] + flat_output_lists[4])
     utils.write_log_file(log_dir, 'low_activity_files.csv', flat_output_lists[2] + flat_output_lists[5])
-    
+
     # Compute and print stats about percentange of clipped and low activity files
     total_clean = len(flat_output_lists[0]) + len(flat_output_lists[1]) + len(flat_output_lists[2])
     total_noise = len(flat_output_lists[3]) + len(flat_output_lists[4]) + len(flat_output_lists[5])
@@ -329,7 +341,7 @@ def main_body():
     pct_noise_clipped = round(len(flat_output_lists[4])/total_noise*100, 1)
     pct_clean_low_activity = round(len(flat_output_lists[2])/total_clean*100, 1)
     pct_noise_low_activity = round(len(flat_output_lists[5])/total_noise*100, 1)
-    
+
     print("Of the " + str(total_clean) + " clean speech files analyzed, " + str(pct_clean_clipped) + \
           "% had clipping, and " + str(pct_clean_low_activity) + "% had low activity " + \
           "(below " + str(params['clean_activity_threshold']*100) + "% active percentage)")
